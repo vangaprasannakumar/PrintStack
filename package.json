@@ -1,0 +1,11 @@
+{
+  "name": "printstack",
+  "private": true,
+  "description": "Tells you exactly what to print, and when to flip the stack. Static app — this file exists only to run the test suite (`npm test`), not to build or deploy anything.",
+  "scripts": {
+    "test": "node --test logic.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

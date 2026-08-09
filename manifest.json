@@ -1,0 +1,25 @@
+{
+  "name": "PrintStack - Smart Duplex & N-Up Print Planner",
+  "short_name": "PrintStack",
+  "description": "Tells you exactly what to print, and when to flip the stack — for duplex, N-up, and booklet printing on any printer.",
+  "start_url": "./index.html",
+  "id": "/",
+  "display": "standalone",
+  "background_color": "#F4F2EC",
+  "theme_color": "#1B4B8F",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "https://i.postimg.cc/dt3WWdVR/Print-Stack-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://i.postimg.cc/L65yyf8V/Print-Stack-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

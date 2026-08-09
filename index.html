@@ -1,0 +1,1548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>PrintStack — Smart Duplex &amp; N-Up Print Planner</title>
+<meta name="description" content="Tells you exactly what to print and when to flip the stack — for duplex, N-up, and booklet printing on any printer.">
+
+<!-- Icons -->
+<link rel="icon" type="image/png" sizes="192x192" href="https://i.postimg.cc/dt3WWdVR/Print-Stack-192x192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="https://i.postimg.cc/L65yyf8V/Print-Stack-512x512.png">
+<link rel="apple-touch-icon" href="https://i.postimg.cc/dt3WWdVR/Print-Stack-192x192.png">
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#1B4B8F" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#14161C" media="(prefers-color-scheme: dark)">
+
+<!-- Set theme before first paint, so there's no flash of the wrong theme -->
+<script>
+(function () {
+  try {
+    var saved = localStorage.getItem('printstack-theme');
+    var theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    document.documentElement.setAttribute('data-theme', theme);
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'light');
+  }
+})();
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+
+<!-- PDF.js — used only for auto-counting pages when a PDF is dropped/chosen -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+</script>
+
+<!-- Core page-arithmetic logic — shared verbatim with the Node test suite in logic.test.js -->
+<script src="./print-logic.js"></script>
+
+<!-- pdf-lib — used only to build downloadable, pre-ordered PDFs once a source PDF is loaded -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+
+<style>
+/* ============================= DESIGN TOKENS ============================= */
+:root {
+  --paper: #F4F2EC;
+  --surface: #FFFFFF;
+  --surface-2: #FBFAF6;
+  --ink: #1C2230;
+  --ink-soft: #565F73;
+  --ink-faint: #8A93A6;
+  --line: #DDD8CB;
+  --line-strong: #C7C0AE;
+  --accent: #1B4B8F;
+  --accent-ink: #FFFFFF;
+  --accent-soft: rgba(27, 75, 143, 0.10);
+  --mark-cyan: #0EA5B7;
+  --proof: #C0392B;
+  --proof-soft: rgba(192, 57, 43, 0.08);
+  --success: #1E8A5F;
+  --success-soft: rgba(30, 138, 95, 0.10);
+  --paper-sheet: #FDFCF8;
+  --paper-sheet-border: #C9C2AE;
+  --paper-sheet-slot: rgba(27, 75, 143, 0.08);
+  --paper-sheet-slot-border: rgba(27, 75, 143, 0.35);
+  --shadow-sm: 0 1px 2px rgba(28, 34, 48, 0.06);
+  --shadow-md: 0 8px 24px rgba(28, 34, 48, 0.08);
+  --shadow-lg: 0 20px 48px rgba(28, 34, 48, 0.14);
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --paper: #14161C;
+  --surface: #1B1E26;
+  --surface-2: #21242E;
+  --ink: #EDEEF2;
+  --ink-soft: #9AA0B4;
+  --ink-faint: #656B7E;
+  --line: #2C303C;
+  --line-strong: #3A3F4E;
+  --accent: #5B9BEF;
+  --accent-ink: #0B1220;
+  --accent-soft: rgba(91, 155, 239, 0.14);
+  --mark-cyan: #3FD3E0;
+  --proof: #F0645A;
+  --proof-soft: rgba(240, 100, 90, 0.12);
+  --success: #4ADE94;
+  --success-soft: rgba(74, 222, 148, 0.12);
+  --paper-sheet: #FDFCF8;
+  --paper-sheet-border: #C9C2AE;
+  --paper-sheet-slot: rgba(27, 75, 143, 0.10);
+  --paper-sheet-slot-border: rgba(27, 75, 143, 0.45);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 20px 48px rgba(0, 0, 0, 0.5);
+  color-scheme: dark;
+}
+
+/* ============================= RESET & BASE ============================= */
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  background: var(--paper);
+  color: var(--ink);
+  min-height: 100vh;
+  transition: background-color 0.35s ease, color 0.35s ease;
+  -webkit-font-smoothing: antialiased;
+}
+img, svg { display: block; max-width: 100%; }
+button, input, select, textarea { font-family: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: var(--accent); }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ============================= SHELL & HEADER ============================= */
+.app-shell {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 20px 16px 60px;
+}
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 4px 22px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.brand-logo {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  object-fit: contain;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
+}
+.brand-text h1 {
+  margin: 0;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  line-height: 1.1;
+}
+.brand-text p {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  line-height: 1.3;
+}
+.theme-toggle {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.25s ease, background-color 0.35s ease, border-color 0.35s ease;
+}
+.theme-toggle:hover { transform: translateY(-1px); }
+.theme-toggle:active { transform: scale(0.94); }
+.theme-toggle svg {
+  width: 19px; height: 19px;
+  transition: transform 0.4s cubic-bezier(.34,1.56,.64,1);
+}
+[data-theme="dark"] .theme-toggle svg { transform: rotate(180deg); }
+
+/* ============================= LAYOUT GRID ============================= */
+.layout {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr;
+  grid-template-areas: "top" "preview" "bottom";
+}
+.region-top { grid-area: top; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.region-preview { grid-area: preview; min-width: 0; }
+.region-bottom { grid-area: bottom; display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+
+@media (min-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr 360px;
+    grid-template-areas:
+      "top     preview"
+      "bottom  preview";
+    align-items: start;
+  }
+  .region-preview { position: sticky; top: 20px; }
+}
+
+/* ============================= CARDS ============================= */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 22px;
+  box-shadow: var(--shadow-sm);
+  transition: background-color 0.35s ease, border-color 0.35s ease;
+}
+.card + .card-divider {
+  border: none;
+  border-top: 1px dashed var(--line-strong);
+  margin: 2px 0;
+}
+.card-title {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+/* ============================= FIELDS ============================= */
+.field { margin-bottom: 4px; }
+.field label {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  margin-bottom: 7px;
+}
+.field-note {
+  font-size: 12px;
+  color: var(--ink-faint);
+  margin-top: 6px;
+}
+input[type="text"], select {
+  width: 100%;
+  padding: 12px 13px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 15px;
+  background: var(--surface-2);
+  color: var(--ink);
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  appearance: none;
+}
+input[type="text"] { font-family: var(--font-mono); letter-spacing: 0.01em; }
+select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='9' viewBox='0 0 14 9'%3E%3Cpath d='M1 1L7 7L13 1' stroke='%23565F73' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 13px center;
+  padding-right: 34px;
+}
+input[type="text"]:focus, select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+select:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.validation-note, .cap-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--proof);
+  background: var(--proof-soft);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  margin-top: 10px;
+}
+.cap-note { color: var(--ink-soft); background: var(--surface-2); }
+.validation-note svg, .cap-note svg { flex-shrink: 0; margin-top: 1px; width: 14px; height: 14px; }
+.hidden { display: none !important; }
+
+/* ============================= OFFLINE BANNER ============================= */
+.offline-banner {
+  position: sticky;
+  top: 0;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 14px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--proof);
+  text-align: center;
+}
+.offline-banner svg { width: 15px; height: 15px; flex-shrink: 0; }
+@media (prefers-reduced-motion: no-preference) {
+  .offline-banner { animation: bannerIn 0.3s ease; }
+  .offline-banner.is-leaving { animation: bannerOut 0.3s ease forwards; }
+}
+@keyframes bannerIn { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+@keyframes bannerOut { from { transform: translateY(0); opacity: 1; } to { transform: translateY(-100%); opacity: 0; } }
+
+/* ============================= DROP ZONE ============================= */
+.dropzone-inline {
+  margin-top: 14px;
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--surface-2);
+  transition: border-color 0.2s ease, background-color 0.2s ease;
+}
+.dropzone-inline p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dropzone-inline svg { width: 17px; height: 17px; color: var(--ink-faint); flex-shrink: 0; }
+.browse-btn {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: none;
+  padding: 8px 14px;
+  border-radius: 999px;
+  white-space: nowrap;
+  transition: transform 0.15s ease, background-color 0.2s ease;
+}
+.browse-btn:hover { transform: translateY(-1px); }
+.browse-btn:active { transform: scale(0.96); }
+
+#drop-zone {
+  position: fixed;
+  inset: 0;
+  background: rgba(27, 75, 143, 0.92);
+  backdrop-filter: blur(3px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 20px;
+  font-weight: 700;
+  z-index: 200;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+#drop-zone.active { opacity: 1; pointer-events: all; }
+#drop-zone .dz-ring {
+  width: 84px; height: 84px; border-radius: 50%;
+  border: 3px dashed rgba(255,255,255,0.85);
+  display: flex; align-items: center; justify-content: center;
+}
+@media (prefers-reduced-motion: no-preference) {
+  #drop-zone.active .dz-ring { animation: dzPulse 1.4s ease-in-out infinite; }
+}
+@keyframes dzPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.08); opacity: 0.7; }
+}
+
+/* ============================= SPECS GRID ============================= */
+.specs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 14px;
+}
+
+/* Custom toggle switch */
+.switch-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--line);
+}
+.switch-row.hidden { display: none; }
+.switch {
+  position: relative;
+  width: 42px;
+  height: 25px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.switch input {
+  position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer;
+}
+.switch-track {
+  position: absolute; inset: 0;
+  background: var(--line-strong);
+  border-radius: 999px;
+  transition: background-color 0.2s ease;
+}
+.switch-thumb {
+  position: absolute; top: 3px; left: 3px;
+  width: 19px; height: 19px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: var(--shadow-sm);
+  transition: transform 0.22s cubic-bezier(.34,1.56,.64,1);
+}
+.switch input:checked ~ .switch-track { background: var(--accent); }
+.switch input:checked ~ .switch-thumb { transform: translateX(17px); }
+.switch input:focus-visible ~ .switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch-label { flex: 1; min-width: 0; }
+.switch-label span.title {
+  display: block; font-size: 14px; font-weight: 600; cursor: pointer;
+}
+.switch-label span.desc {
+  display: block; font-size: 12.5px; color: var(--ink-soft); margin-top: 3px; line-height: 1.4;
+}
+
+/* ============================= BUTTONS ============================= */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 700;
+  padding: 12px 16px;
+  border-radius: var(--radius-sm);
+  border: none;
+  transition: transform 0.15s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+}
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.6; cursor: default; pointer-events: none; transform: none; }
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: var(--shadow-sm);
+}
+.btn-primary:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+.btn-primary.is-success { background: var(--success); }
+.btn-ghost.is-success { background: var(--success-soft); color: var(--success); border-color: var(--success); }
+.btn-ghost {
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  border: 1.5px solid var(--line);
+}
+.btn-ghost:hover { border-color: var(--line-strong); color: var(--ink); }
+.btn-row { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.btn-row .btn { flex: 1; min-width: 120px; }
+.btn svg { width: 15px; height: 15px; }
+
+/* ============================= PREVIEW ============================= */
+.preview-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.nav-btn {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  border: 1.5px solid var(--line);
+  background: var(--surface-2);
+  display: flex; align-items: center; justify-content: center;
+  transition: transform 0.15s ease, border-color 0.2s ease, opacity 0.2s ease;
+}
+.nav-btn:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); }
+.nav-btn:disabled { opacity: 0.3; cursor: default; }
+.nav-btn svg { width: 13px; height: 13px; }
+.sheet-badge {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  min-width: 92px;
+  text-align: center;
+}
+
+.preview-stage {
+  margin-top: 18px;
+  display: flex;
+  gap: 22px;
+  justify-content: center;
+}
+.preview-side { display: flex; flex-direction: column; align-items: center; gap: 9px; flex: 1; min-width: 0; max-width: 150px; }
+.preview-side .side-label {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.sheet-box {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4.2;
+  background: var(--paper-sheet);
+  border: 1.5px solid var(--paper-sheet-border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-md);
+  display: grid;
+  grid-auto-rows: 1fr;
+  gap: 3px;
+  padding: 8px;
+  transition: aspect-ratio 0.3s ease;
+}
+.sheet-box.landscape { aspect-ratio: 4.2 / 3; }
+.preview-stage.is-landscape { flex-direction: column; align-items: center; }
+.preview-stage.is-landscape .preview-side { max-width: 220px; }
+.mini-page {
+  background: var(--paper-sheet-slot);
+  border: 1px dashed var(--paper-sheet-slot-border);
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: #1C2230;
+  overflow: hidden;
+  opacity: 0;
+}
+.mini-page.dense { font-size: 8px; }
+.mini-page.blank { border-style: dotted; opacity: 0.35 !important; }
+.mini-page.has-thumb {
+  padding: 0;
+  border-style: solid;
+  background: #fff;
+  position: relative;
+}
+.mini-page.has-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  opacity: 0;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .mini-page.has-thumb img { animation: thumbFade 0.25s ease forwards; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mini-page.has-thumb img { opacity: 1; }
+}
+@keyframes thumbFade { from { opacity: 0; } to { opacity: 1; } }
+.page-num-badge {
+  position: absolute;
+  bottom: 2px;
+  right: 3px;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  color: #1C2230;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 1px 3px;
+  border-radius: 3px;
+  line-height: 1.3;
+  pointer-events: none;
+}
+.page-num-fallback { opacity: 0.55; }
+@media (prefers-reduced-motion: no-preference) {
+  .mini-page { animation: slotIn 0.32s ease forwards; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mini-page { opacity: 1; }
+}
+@keyframes slotIn {
+  from { opacity: 0; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Registration marks — the corner crosshairs, a nod to real print registration marks */
+.reg-mark {
+  position: absolute;
+  width: 15px; height: 15px;
+  opacity: 0.8;
+  color: var(--mark-cyan);
+}
+.reg-mark.tl { top: -6px; left: -6px; }
+.reg-mark.br { bottom: -6px; right: -6px; color: var(--proof); }
+@media (prefers-reduced-motion: no-preference) {
+  .reg-mark { animation: regSnap 0.5s cubic-bezier(.2,.9,.3,1.2) both; }
+  .reg-mark.br { animation-delay: 0.08s; }
+}
+@keyframes regSnap {
+  0% { opacity: 0; transform: scale(0.4) rotate(-25deg); }
+  100% { opacity: 0.8; transform: scale(1) rotate(0); }
+}
+
+.preview-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 26px 10px 6px;
+  color: var(--ink-soft);
+}
+.preview-empty svg { width: 46px; height: 46px; color: var(--ink-faint); }
+.preview-empty p { margin: 0; font-size: 13.5px; line-height: 1.5; max-width: 220px; }
+
+/* ============================= ALERT ============================= */
+.alert-card {
+  border: 1.5px dashed var(--proof);
+  background: var(--proof-soft);
+  border-radius: var(--radius-md);
+  padding: 16px 18px;
+  display: flex;
+  gap: 12px;
+}
+.alert-card.is-info { border-color: var(--accent); background: var(--accent-soft); }
+.alert-card svg { width: 19px; height: 19px; color: var(--proof); flex-shrink: 0; margin-top: 1px; }
+.alert-card.is-info svg { color: var(--accent); }
+.alert-card .alert-body { font-size: 13.5px; line-height: 1.55; color: var(--ink); }
+.alert-card .alert-body strong { font-weight: 700; }
+@media (prefers-reduced-motion: no-preference) {
+  .alert-card { animation: settleIn 0.35s cubic-bezier(.2,.9,.3,1.1); }
+}
+@keyframes settleIn {
+  from { opacity: 0; transform: translateY(-6px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ============================= OUTPUT ============================= */
+.output-group { margin-bottom: 18px; }
+.output-group:last-child { margin-bottom: 0; }
+.output-group label {
+  display: block;
+  font-size: 12.5px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.output-group label .muted { font-weight: 500; color: var(--ink-soft); }
+textarea {
+  width: 100%;
+  min-height: 68px;
+  padding: 12px 13px;
+  border: 1.5px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 13.5px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+/* ============================= FOOTER NOTE ============================= */
+.note-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.note-text { font-size: 14px; }
+.note-text strong { font-family: var(--font-mono); color: var(--accent); }
+.flip-guide { font-size: 12.5px; color: var(--ink-soft); margin-top: 5px; line-height: 1.5; }
+.reset-link {
+  background: none; border: none; color: var(--ink-faint);
+  font-size: 12.5px; font-weight: 600; text-decoration: underline;
+  text-underline-offset: 2px; flex-shrink: 0;
+}
+.reset-link:hover { color: var(--proof); }
+
+/* ============================= RESPONSIVE TWEAKS ============================= */
+@media (max-width: 460px) {
+  .app-shell { padding: 14px 10px 44px; }
+  .card { padding: 17px; border-radius: var(--radius-md); }
+  .brand-text h1 { font-size: 17px; }
+  .preview-stage { gap: 12px; }
+  .btn-row .btn { min-width: 100%; }
+}
+
+@media print {
+  body { background: #fff; }
+  .app-header, .theme-toggle, #drop-zone, .reset-link, .btn-row { display: none !important; }
+  .card { box-shadow: none; border-color: #ccc; }
+}
+</style>
+</head>
+<body>
+
+<div id="offlineBanner" class="offline-banner hidden" role="status" aria-live="polite">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 1l22 22M9 9a3 3 0 014.24 4.24M4.93 4.93A10.94 10.94 0 001 8.5a17.93 17.93 0 015.17 3.44M12.42 5.05A17.9 17.9 0 0123 8.5a17.87 17.87 0 01-3.11 2.53M8.5 16.5a5 5 0 017 0M12 20.01l.01-.01"/></svg>
+  <span>You&rsquo;re offline &mdash; using the cached version.</span>
+</div>
+
+<div id="drop-zone" aria-hidden="true">
+  <div class="dz-ring">
+    <svg viewBox="0 0 24 24" fill="none" width="34" height="34"><path d="M12 4V16M12 4L7 9M12 4L17 9" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 17V18C4 19.1046 4.89543 20 6 20H18C19.1046 20 20 19.1046 20 18V17" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>
+  </div>
+  <span>Drop your PDF to count its pages</span>
+</div>
+
+<div class="app-shell">
+
+  <header class="app-header">
+    <div class="brand">
+      <img src="https://i.postimg.cc/dt3WWdVR/Print-Stack-192x192.png" alt="" class="brand-logo" id="brandLogo">
+      <div class="brand-text">
+        <h1>PrintStack</h1>
+        <p>Exactly what to print, and when to flip the stack.</p>
+      </div>
+    </div>
+    <button class="theme-toggle" id="themeToggle" type="button" aria-label="Switch to light theme">
+      <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></svg>
+    </button>
+  </header>
+
+  <main class="layout" id="layoutGrid">
+
+    <!-- ============ TOP CONTROLS ============ -->
+    <section class="region-top">
+
+      <div class="card">
+        <div class="field">
+          <label for="pageInput">Pages</label>
+          <input type="text" id="pageInput" placeholder="e.g. 24   or   1-10, 15" autocomplete="off" inputmode="text">
+          <p class="field-note">Total page count, or a specific range like <code>1-10, 15</code>.</p>
+        </div>
+        <div class="validation-note hidden" id="ignoredNote" role="status">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/></svg>
+          <span id="ignoredText"></span>
+        </div>
+        <div class="cap-note hidden" id="capNote" role="status">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+          <span id="capText"></span>
+        </div>
+
+        <div class="dropzone-inline">
+          <p>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+            Or drop a PDF anywhere on this page
+          </p>
+          <button type="button" class="browse-btn" id="browseBtn">Choose a file</button>
+          <input type="file" id="fileInput" accept="application/pdf" class="visually-hidden" tabindex="-1">
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="specs-grid">
+          <div class="field">
+            <label for="layoutMode">Page order</label>
+            <select id="layoutMode">
+              <option value="sequential" selected>Sequential</option>
+              <option value="booklet">Booklet (fold &amp; staple)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="pagesPerSheet">Pages per sheet</label>
+            <select id="pagesPerSheet">
+              <option value="1">1</option>
+              <option value="2" selected>2</option>
+              <option value="4">4</option>
+              <option value="6">6</option>
+              <option value="9">9</option>
+              <option value="16">16</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="printMode">Print mode</label>
+            <select id="printMode">
+              <option value="both" selected>Duplex (both sides)</option>
+              <option value="one">Simplex (one side)</option>
+            </select>
+          </div>
+          <div class="field" id="bindEdgeField">
+            <label for="bindEdge">Flip edge</label>
+            <select id="bindEdge">
+              <option value="long" selected>Long edge</option>
+              <option value="short">Short edge</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="pageOrientation">Page orientation</label>
+            <select id="pageOrientation">
+              <option value="portrait" selected>Portrait</option>
+              <option value="landscape">Landscape</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="switch-row" id="reverseToggleRow">
+          <label class="switch">
+            <input type="checkbox" id="reverseBack" checked>
+            <span class="switch-track"></span>
+            <span class="switch-thumb"></span>
+          </label>
+          <div class="switch-label">
+            <span class="title" id="reverseLabelText">Reverse Set 2 for top-feed printers</span>
+            <span class="desc">Turn this on if your printer pulls paper from the top of the stack when you reload it. Off, it assumes bottom-feed.</span>
+          </div>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- ============ PREVIEW (sticky on desktop) ============ -->
+    <aside class="region-preview">
+      <div class="card">
+        <div class="card-title">
+          <span class="eyebrow">Preview</span>
+          <div class="preview-nav">
+            <button class="nav-btn" id="prevSheetBtn" type="button" aria-label="Previous sheet">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+            </button>
+            <span class="sheet-badge" id="sheetBadge">—</span>
+            <button class="nav-btn" id="nextSheetBtn" type="button" aria-label="Next sheet">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div id="previewEmpty" class="preview-empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 3h7l5 5v13a1 1 0 01-1 1H7a1 1 0 01-1-1V4a1 1 0 011-1z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h6M9 9h2"/></svg>
+          <p>Enter a page count to see exactly how each sheet will look.</p>
+        </div>
+
+        <div id="previewStage" class="preview-stage hidden">
+          <div class="preview-side">
+            <span class="side-label">Front</span>
+            <div class="sheet-box" id="previewFront"></div>
+          </div>
+          <div class="preview-side" id="previewBackSide">
+            <span class="side-label">Back</span>
+            <div class="sheet-box" id="previewBack"></div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ============ BOTTOM CONTROLS ============ -->
+    <section class="region-bottom">
+
+      <div class="alert-card hidden" id="smartAlert" role="status">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><path d="M12 9v4M12 17h.01"/></svg>
+        <div class="alert-body" id="alertBody"></div>
+      </div>
+
+      <div class="card" id="outputCard">
+        <div class="output-group">
+          <label id="set1-label">Pages to print</label>
+          <textarea id="set1" readonly aria-readonly="true"></textarea>
+          <div class="btn-row">
+            <button class="btn btn-primary" id="btn1" type="button" data-target="set1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+              <span>Copy</span>
+            </button>
+            <button class="btn btn-ghost" id="dl1" type="button" data-target="set1" data-name="set1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+              <span>Download .txt</span>
+            </button>
+            <button class="btn btn-ghost hidden" id="pdf1" type="button" data-target="set1" data-name="set1">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+              <span>Download PDF</span>
+            </button>
+          </div>
+          <p class="field-note pdf-hint hidden" id="pdfHint1">Drop a PDF above to also get a ready-to-print file, pages already in this order.</p>
+        </div>
+
+        <div class="output-group hidden" id="set2-container">
+          <label>Set 2 <span class="muted">— flip the stack, then print these (backs)</span></label>
+          <textarea id="set2" readonly aria-readonly="true"></textarea>
+          <div class="btn-row">
+            <button class="btn btn-primary" id="btn2" type="button" data-target="set2">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>
+              <span>Copy</span>
+            </button>
+            <button class="btn btn-ghost" id="dl2" type="button" data-target="set2" data-name="set2">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+              <span>Download .txt</span>
+            </button>
+            <button class="btn btn-ghost hidden" id="pdf2" type="button" data-target="set2" data-name="set2">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><path d="M14 2v6h6"/></svg>
+              <span>Download PDF</span>
+            </button>
+          </div>
+          <p class="field-note pdf-hint hidden" id="pdfHint2">Drop a PDF above to also get a ready-to-print file, pages already in this order.</p>
+        </div>
+      </div>
+
+      <div class="card note-card hidden" id="sheetNote">
+        <div>
+          <p class="note-text">You need <strong id="noteCount">0</strong> sheet(s) of paper.</p>
+          <p class="flip-guide" id="flipGuide"></p>
+        </div>
+        <button class="reset-link" id="resetBtn" type="button" title="Clears page settings — keeps your theme">Reset settings</button>
+      </div>
+
+    </section>
+
+  </main>
+</div>
+
+<!-- Registration mark template, cloned via JS -->
+<template id="regMarkTemplate">
+  <svg class="reg-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
+    <circle cx="12" cy="12" r="7"/><path d="M12 2v6M12 16v6M2 12h6M16 12h6"/>
+  </svg>
+</template>
+
+<script>
+(function () {
+  'use strict';
+
+  var MAX_PAGES = 5000;
+  var THEME_KEY = 'printstack-theme';
+  var SETTINGS_KEY = 'printstack-settings-v1';
+
+  // ---------- DOM refs ----------
+  var $ = function (id) { return document.getElementById(id); };
+  var pageInputEl = $('pageInput');
+  var ignoredNoteEl = $('ignoredNote'), ignoredTextEl = $('ignoredText');
+  var capNoteEl = $('capNote'), capTextEl = $('capText');
+  var browseBtnEl = $('browseBtn'), fileInputEl = $('fileInput');
+  var dropZoneEl = $('drop-zone');
+  var layoutModeEl = $('layoutMode'), pagesPerSheetEl = $('pagesPerSheet');
+  var printModeEl = $('printMode'), bindEdgeEl = $('bindEdge'), bindEdgeFieldEl = $('bindEdgeField');
+  var pageOrientationEl = $('pageOrientation');
+  var reverseToggleRowEl = $('reverseToggleRow'), reverseBackEl = $('reverseBack');
+  var prevBtnEl = $('prevSheetBtn'), nextBtnEl = $('nextSheetBtn'), sheetBadgeEl = $('sheetBadge');
+  var previewEmptyEl = $('previewEmpty'), previewStageEl = $('previewStage');
+  var previewFrontEl = $('previewFront'), previewBackEl = $('previewBack'), previewBackSideEl = $('previewBackSide');
+  var smartAlertEl = $('smartAlert'), alertBodyEl = $('alertBody');
+  var set1LabelEl = $('set1-label'), set1El = $('set1'), set2ContainerEl = $('set2-container'), set2El = $('set2');
+  var btn1El = $('btn1'), btn2El = $('btn2'), dl1El = $('dl1'), dl2El = $('dl2');
+  var pdf1El = $('pdf1'), pdf2El = $('pdf2'), pdfHint1El = $('pdfHint1'), pdfHint2El = $('pdfHint2');
+  var sheetNoteEl = $('sheetNote'), noteCountEl = $('noteCount'), flipGuideEl = $('flipGuide'), resetBtnEl = $('resetBtn');
+  var themeToggleEl = $('themeToggle'), themeIconEl = $('themeIcon'), brandLogoEl = $('brandLogo');
+  var regMarkTemplate = $('regMarkTemplate');
+  var offlineBannerEl = $('offlineBanner');
+
+  var state = { pages: [], sheets: [], previewIndex: 0, ignored: [], capped: false, totalRequested: 0, pdfBytes: null };
+
+  // Real PDF page thumbnails — only active once a PDF has actually been
+  // dropped/chosen. Falls back to plain numbered boxes otherwise.
+  var pdfDoc = null;
+  var thumbCache = Object.create(null); // pageNumber -> dataURL
+  var thumbOrder = [];                  // insertion order, for capped eviction
+  var THUMB_CACHE_CAP = 48;
+  var renderGeneration = 0;             // bumped on every renderPreview() call
+
+  function cacheThumb(pageNum, dataUrl) {
+    if (!(pageNum in thumbCache)) thumbOrder.push(pageNum);
+    thumbCache[pageNum] = dataUrl;
+    while (thumbOrder.length > THUMB_CACHE_CAP) {
+      delete thumbCache[thumbOrder.shift()];
+    }
+  }
+
+  // Parsing, sheet chunking, booklet imposition, and reverse-stack logic all
+  // live in print-logic.js (loaded above) as `PrintStackLogic` — shared
+  // verbatim with the test suite in logic.test.js, so there's exactly
+  // one copy of this math to keep correct.
+
+  // ---------- Rendering ----------
+  function showEmptyState(customText) {
+    previewEmptyEl.classList.remove('hidden');
+    previewStageEl.classList.add('hidden');
+    previewEmptyEl.querySelector('p').textContent = customText || 'Enter a page count to see exactly how each sheet will look.';
+  }
+  function hideEmptyState() {
+    previewEmptyEl.classList.add('hidden');
+    previewStageEl.classList.remove('hidden');
+  }
+
+  function renderValidationNote() {
+    if (state.ignored.length) {
+      ignoredNoteEl.classList.remove('hidden');
+      ignoredTextEl.textContent = 'Ignored: ' + state.ignored.join(', ') + ' \u2014 check ' + (state.ignored.length > 1 ? 'these entries' : 'this entry') + '.';
+    } else {
+      ignoredNoteEl.classList.add('hidden');
+    }
+  }
+  function renderCapNote() {
+    if (state.capped) {
+      capNoteEl.classList.remove('hidden');
+      capTextEl.textContent = 'Capped at ' + MAX_PAGES.toLocaleString() + ' pages for performance \u2014 showing the first ' + MAX_PAGES.toLocaleString() + ' of ' + state.totalRequested.toLocaleString() + '.';
+    } else {
+      capNoteEl.classList.add('hidden');
+    }
+  }
+
+  function renderOutputs() {
+    var isDuplex = printModeEl.value === 'both';
+    set1El.value = state.set1 || '';
+    set2ContainerEl.classList.toggle('hidden', !isDuplex);
+    set2El.value = isDuplex ? (state.set2 || '') : '';
+    set1LabelEl.innerHTML = isDuplex
+      ? 'Set 1 <span class="muted">\u2014 print first (fronts)</span>'
+      : 'Pages to print';
+
+    var hasPdf = !!state.pdfBytes;
+    var hasSet1 = !!state.set1;
+    var hasSet2 = isDuplex && !!state.set2;
+    pdf1El.classList.toggle('hidden', !(hasPdf && hasSet1));
+    pdfHint1El.classList.toggle('hidden', !(hasSet1 && !hasPdf));
+    pdf2El.classList.toggle('hidden', !(hasPdf && hasSet2));
+    pdfHint2El.classList.toggle('hidden', !(hasSet2 && !hasPdf));
+  }
+
+  function renderAlert() {
+    if (!state.alert) { smartAlertEl.classList.add('hidden'); return; }
+    smartAlertEl.classList.remove('hidden');
+    smartAlertEl.classList.toggle('is-info', state.alert.type === 'error');
+    void smartAlertEl.offsetWidth;
+    smartAlertEl.style.animation = 'none';
+    void smartAlertEl.offsetWidth;
+    smartAlertEl.style.animation = '';
+    var html = '';
+    if (state.alert.type === 'remove') {
+      html = '<strong>Pull the top sheet before printing Set 2.</strong> The last sheet\u2019s back side is blank (front pages ' + state.alert.front.join(', ') + ') \u2014 remove it from the printed stack, then print Set 2 with the rest.';
+    } else if (state.alert.type === 'relocate') {
+      html = '<strong>Move the top sheet to the bottom first.</strong> The last sheet\u2019s back side is only partly filled (page ' + state.alert.back.join(', ') + ') \u2014 after flipping the stack, move the sheet with fronts ' + state.alert.front.join(', ') + ' from the top to the bottom, then print Set 2.';
+    } else if (state.alert.type === 'error') {
+      html = state.alert.html;
+    }
+    alertBodyEl.innerHTML = html;
+  }
+
+  function renderSheetNote(count) {
+    if (!count) { sheetNoteEl.classList.add('hidden'); return; }
+    sheetNoteEl.classList.remove('hidden');
+    noteCountEl.textContent = String(count);
+    flipGuideEl.textContent = printModeEl.value === 'both'
+      ? PrintStackLogic.getFlipGuideText(bindEdgeEl.value, layoutModeEl.value)
+      : 'Print these single-sided \u2014 no flipping needed.';
+  }
+
+  function renderPreviewNav() {
+    var total = state.sheets.length;
+    prevBtnEl.disabled = total === 0 || state.previewIndex <= 0;
+    nextBtnEl.disabled = total === 0 || state.previewIndex >= total - 1;
+    sheetBadgeEl.textContent = total ? ('Sheet ' + (state.previewIndex + 1) + ' of ' + total) : '\u2014';
+  }
+
+  function gridColsFor(pps) {
+    if (pps === 1) return 1;
+    if (pps === 6 || pps === 9) return 3;
+    if (pps === 16) return 4;
+    return 2;
+  }
+
+  function buildSheetBox(container, pageArr, pps, cols, gen) {
+    container.innerHTML = '';
+    container.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+    var dense = pps >= 9;
+    for (var i = 0; i < pps; i++) {
+      var val = pageArr[i];
+      var cell = document.createElement('div');
+      cell.className = 'mini-page' + (val == null ? ' blank' : '') + (dense ? ' dense' : '');
+      cell.style.animationDelay = (i * 0.025) + 's';
+
+      if (val == null) {
+        container.appendChild(cell);
+        continue;
+      }
+
+      if (pdfDoc && val <= pdfDoc.numPages) {
+        cell.classList.add('has-thumb');
+        if (thumbCache[val]) {
+          appendThumb(cell, thumbCache[val], val);
+        } else {
+          var fallback = document.createElement('span');
+          fallback.className = 'page-num-fallback';
+          fallback.textContent = String(val);
+          cell.appendChild(fallback);
+          renderThumbnail(val, gen, cell);
+        }
+      } else {
+        cell.textContent = String(val);
+      }
+      container.appendChild(cell);
+    }
+    var markSrc = regMarkTemplate.content.firstElementChild;
+    var tl = markSrc.cloneNode(true); tl.classList.add('tl');
+    var br = markSrc.cloneNode(true); br.classList.add('br');
+    container.appendChild(tl);
+    container.appendChild(br);
+  }
+
+  function appendThumb(cell, dataUrl, pageNum) {
+    cell.innerHTML = '';
+    var img = document.createElement('img');
+    img.src = dataUrl;
+    img.alt = 'Page ' + pageNum;
+    cell.appendChild(img);
+    var badge = document.createElement('span');
+    badge.className = 'page-num-badge';
+    badge.textContent = String(pageNum);
+    cell.appendChild(badge);
+  }
+
+  function renderThumbnail(pageNum, gen, cellEl) {
+    pdfDoc.getPage(pageNum).then(function (page) {
+      if (gen !== renderGeneration) return; // a newer sheet/settings render superseded this one
+      var baseViewport = page.getViewport({ scale: 1 });
+      var targetWidth = 200;
+      var scale = targetWidth / baseViewport.width;
+      var viewport = page.getViewport({ scale: scale });
+      var canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      var ctx = canvas.getContext('2d');
+      return page.render({ canvasContext: ctx, viewport: viewport }).promise.then(function () {
+        if (gen !== renderGeneration) return;
+        var dataUrl = canvas.toDataURL('image/png');
+        cacheThumb(pageNum, dataUrl);
+        if (cellEl && cellEl.isConnected) appendThumb(cellEl, dataUrl, pageNum);
+      });
+    }).catch(function (err) {
+      console.warn('PrintStack: thumbnail render failed for page', pageNum, err);
+    });
+  }
+
+  function renderPreview(index) {
+    var sheet = state.sheets[index];
+    if (!sheet) return;
+    renderGeneration++;
+    var gen = renderGeneration;
+    var pps = parseInt(pagesPerSheetEl.value, 10);
+    var cols = gridColsFor(pps);
+    var isLandscape = pageOrientationEl.value === 'landscape';
+    previewStageEl.classList.toggle('is-landscape', isLandscape);
+    previewFrontEl.classList.toggle('landscape', isLandscape);
+    previewBackEl.classList.toggle('landscape', isLandscape);
+    buildSheetBox(previewFrontEl, sheet.front, pps, cols, gen);
+    var isDuplex = printModeEl.value === 'both';
+    previewBackSideEl.classList.toggle('hidden', !isDuplex);
+    if (isDuplex) buildSheetBox(previewBackEl, sheet.back, pps, cols, gen);
+  }
+
+  // ---------- Layout-mode / print-mode constraints ----------
+  function applyPrintModeVisibility() {
+    var isDuplex = printModeEl.value === 'both';
+    bindEdgeFieldEl.classList.toggle('hidden', !isDuplex);
+    reverseToggleRowEl.classList.toggle('hidden', !isDuplex);
+  }
+  function applyLayoutModeConstraints() {
+    var isBooklet = layoutModeEl.value === 'booklet';
+    if (isBooklet) {
+      pagesPerSheetEl.value = '2';
+      pagesPerSheetEl.disabled = true;
+      printModeEl.value = 'both';
+      printModeEl.disabled = true;
+    } else {
+      pagesPerSheetEl.disabled = false;
+      printModeEl.disabled = false;
+    }
+    applyPrintModeVisibility();
+  }
+
+  // ---------- Main calculation ----------
+  function calculateAll() {
+    var parsed = PrintStackLogic.parsePageInput(pageInputEl.value);
+    state.ignored = parsed.ignored;
+    state.totalRequested = parsed.pages.length;
+
+    var pages = parsed.pages;
+    state.capped = pages.length > MAX_PAGES;
+    if (state.capped) pages = pages.slice(0, MAX_PAGES);
+
+    renderValidationNote();
+    renderCapNote();
+
+    if (pages.length === 0) {
+      state.pages = []; state.sheets = []; state.alert = null; state.set1 = ''; state.set2 = '';
+      showEmptyState();
+      renderOutputs();
+      renderAlert();
+      renderSheetNote(0);
+      renderPreviewNav();
+      return;
+    }
+
+    var pps = parseInt(pagesPerSheetEl.value, 10);
+    var printMode = printModeEl.value;
+    var layoutMode = layoutModeEl.value;
+    var sheets;
+
+    if (layoutMode === 'booklet') {
+      sheets = PrintStackLogic.calcBooklet(pages);
+      if (sheets === null) {
+        var P = pages.length, rem = P % 4, blanksNeeded = (4 - rem) % 4;
+        state.pages = pages; state.sheets = [];
+        state.alert = {
+          type: 'error',
+          html: '<strong>Booklet layout needs a multiple of 4 pages.</strong> You have ' + P + ' page' + (P === 1 ? '' : 's') + ' \u2014 add ' + blanksNeeded + ' blank page' + (blanksNeeded === 1 ? '' : 's') + ' to the end of your document (or trim ' + rem + '), then update the count above.'
+        };
+        state.set1 = ''; state.set2 = '';
+        showEmptyState('Fix the page count to preview your booklet.');
+        renderOutputs();
+        renderAlert();
+        renderSheetNote(0);
+        renderPreviewNav();
+        return;
+      }
+    } else {
+      sheets = PrintStackLogic.calcSequential(pages, pps, printMode);
+    }
+
+    var result = PrintStackLogic.applyReverse(sheets, printMode === 'both' && reverseBackEl.checked);
+    state.pages = pages;
+    state.sheets = sheets;
+    state.set1 = result.set1;
+    state.set2 = result.set2;
+    state.alert = result.alert;
+    state.previewIndex = Math.min(Math.max(state.previewIndex, 0), sheets.length - 1);
+
+    hideEmptyState();
+    renderOutputs();
+    renderAlert();
+    renderSheetNote(sheets.length);
+    renderPreviewNav();
+    renderPreview(state.previewIndex);
+  }
+
+  // ---------- Settings persistence ----------
+  function loadSettings() {
+    try {
+      var raw = localStorage.getItem(SETTINGS_KEY);
+      if (!raw) return;
+      var s = JSON.parse(raw);
+      if (s.pagesPerSheet) pagesPerSheetEl.value = s.pagesPerSheet;
+      if (s.printMode) printModeEl.value = s.printMode;
+      if (s.layoutMode) layoutModeEl.value = s.layoutMode;
+      if (s.bindEdge) bindEdgeEl.value = s.bindEdge;
+      if (s.pageOrientation) pageOrientationEl.value = s.pageOrientation;
+      if (typeof s.reverseBack === 'boolean') reverseBackEl.checked = s.reverseBack;
+    } catch (e) { /* localStorage unavailable — settings just won't persist */ }
+  }
+  function saveSettings() {
+    try {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify({
+        pagesPerSheet: pagesPerSheetEl.value,
+        printMode: printModeEl.value,
+        layoutMode: layoutModeEl.value,
+        bindEdge: bindEdgeEl.value,
+        pageOrientation: pageOrientationEl.value,
+        reverseBack: reverseBackEl.checked
+      }));
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---------- Theme ----------
+  var ICONS = {
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>',
+    moon: '<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>'
+  };
+  function updateThemeIcon() {
+    var theme = document.documentElement.getAttribute('data-theme');
+    themeIconEl.innerHTML = theme === 'dark' ? ICONS.sun : ICONS.moon;
+    themeToggleEl.setAttribute('aria-label', theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme');
+  }
+  themeToggleEl.addEventListener('click', function () {
+    var current = document.documentElement.getAttribute('data-theme');
+    var next = current === 'dark' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+    updateThemeIcon();
+  });
+
+  // ---------- Logo: hide gracefully only on a genuine load failure ----------
+  brandLogoEl.addEventListener('error', function () { brandLogoEl.style.display = 'none'; });
+
+  // ---------- Copy / Download ----------
+  function setupCopyButton(btn) {
+    btn.addEventListener('click', function () {
+      var el = $(btn.getAttribute('data-target'));
+      if (!el.value) return;
+      var span = btn.querySelector('span'), original = span.textContent;
+      function flashSuccess() {
+        btn.classList.add('is-success');
+        span.textContent = 'Copied!';
+        setTimeout(function () { btn.classList.remove('is-success'); span.textContent = original; }, 1800);
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(el.value).then(flashSuccess).catch(function () {
+          el.select(); document.execCommand('copy'); flashSuccess();
+        });
+      } else {
+        el.select(); document.execCommand('copy'); flashSuccess();
+      }
+    });
+  }
+  function setupDownloadButton(btn) {
+    btn.addEventListener('click', function () {
+      var el = $(btn.getAttribute('data-target'));
+      if (!el.value) return;
+      var blob = new Blob([el.value], { type: 'text/plain' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'printstack-' + btn.getAttribute('data-name') + '.txt';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  }
+  setupCopyButton(btn1El); setupCopyButton(btn2El);
+  setupDownloadButton(dl1El); setupDownloadButton(dl2El);
+
+  // ---------- Ready-to-print PDF export (requires a loaded source PDF) ----------
+  function buildOrderedPdfBytes(pageNumStr) {
+    if (!state.pdfBytes || !pageNumStr) return Promise.resolve(null);
+    var pageNumbers = pageNumStr.split(',')
+      .map(function (s) { return parseInt(s, 10); })
+      .filter(function (n) { return !isNaN(n); });
+    if (!pageNumbers.length) return Promise.resolve(null);
+
+    var PDFDocument = PDFLib.PDFDocument;
+    return PDFDocument.load(state.pdfBytes).then(function (srcDoc) {
+      var srcPageCount = srcDoc.getPageCount();
+      var inRange = pageNumbers.filter(function (n) { return n >= 1 && n <= srcPageCount; });
+      if (inRange.length < pageNumbers.length) {
+        ignoredNoteEl.classList.remove('hidden');
+        ignoredTextEl.textContent = 'Some page numbers are beyond the loaded PDF\u2019s ' + srcPageCount + ' pages \u2014 they were skipped in the downloaded file.';
+      }
+      if (!inRange.length) return null;
+      var indices = inRange.map(function (n) { return n - 1; });
+      return PDFDocument.create().then(function (outDoc) {
+        return outDoc.copyPages(srcDoc, indices).then(function (copiedPages) {
+          copiedPages.forEach(function (p) { outDoc.addPage(p); });
+          return outDoc.save();
+        });
+      });
+    });
+  }
+
+  function setupPdfDownloadButton(btn) {
+    btn.addEventListener('click', function () {
+      var el = $(btn.getAttribute('data-target'));
+      if (!el.value || !state.pdfBytes) return;
+      var span = btn.querySelector('span'), original = span.textContent;
+      btn.disabled = true;
+      span.textContent = 'Building\u2026';
+      buildOrderedPdfBytes(el.value).then(function (bytes) {
+        if (!bytes) { span.textContent = 'No pages to export'; return; }
+        var blob = new Blob([bytes], { type: 'application/pdf' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'printstack-' + btn.getAttribute('data-name') + '.pdf';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        span.textContent = 'Downloaded!';
+        btn.classList.add('is-success');
+      }).catch(function (err) {
+        console.warn('PrintStack: PDF export failed', err);
+        span.textContent = 'Failed \u2014 try again';
+      }).then(function () {
+        setTimeout(function () {
+          btn.disabled = false;
+          btn.classList.remove('is-success');
+          span.textContent = original;
+        }, 1800);
+      });
+    });
+  }
+  setupPdfDownloadButton(pdf1El);
+  setupPdfDownloadButton(pdf2El);
+
+  // ---------- PDF drag & drop / file picker ----------
+  function loadPdfFile(file) {
+    var looksLikePdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
+    if (!looksLikePdf) {
+      ignoredNoteEl.classList.remove('hidden');
+      ignoredTextEl.textContent = 'That file isn\u2019t a PDF \u2014 drop a .pdf file, or type a page count above.';
+      return;
+    }
+    var reader = new FileReader();
+    reader.onload = function (ev) {
+      var buffer = ev.target.result;
+      var pdfBytesCopy = buffer.slice(0); // independent copy — pdf.js's worker may transfer/detach the original
+      var typedArray = new Uint8Array(buffer);
+      pdfjsLib.getDocument(typedArray).promise.then(function (pdf) {
+        pdfDoc = pdf;
+        state.pdfBytes = pdfBytesCopy;
+        thumbCache = Object.create(null);
+        thumbOrder = [];
+        pageInputEl.value = String(pdf.numPages);
+        calculateAll();
+      }).catch(function () {
+        ignoredNoteEl.classList.remove('hidden');
+        ignoredTextEl.textContent = 'Couldn\u2019t read that PDF \u2014 try typing the page count instead.';
+      });
+    };
+    reader.readAsArrayBuffer(file);
+  }
+
+  browseBtnEl.addEventListener('click', function () { fileInputEl.click(); });
+  fileInputEl.addEventListener('change', function () {
+    var file = fileInputEl.files && fileInputEl.files[0];
+    if (file) loadPdfFile(file);
+    fileInputEl.value = '';
+  });
+
+  var dragCounter = 0;
+  function hasFiles(e) {
+    return e.dataTransfer && e.dataTransfer.types && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1;
+  }
+  window.addEventListener('dragenter', function (e) {
+    if (!hasFiles(e)) return;
+    dragCounter++;
+    dropZoneEl.classList.add('active');
+    dropZoneEl.setAttribute('aria-hidden', 'false');
+  });
+  window.addEventListener('dragover', function (e) { if (hasFiles(e)) e.preventDefault(); });
+  window.addEventListener('dragleave', function () {
+    dragCounter = Math.max(0, dragCounter - 1);
+    if (dragCounter === 0) { dropZoneEl.classList.remove('active'); dropZoneEl.setAttribute('aria-hidden', 'true'); }
+  });
+  window.addEventListener('drop', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragCounter = 0;
+    dropZoneEl.classList.remove('active');
+    dropZoneEl.setAttribute('aria-hidden', 'true');
+    var file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (file) loadPdfFile(file);
+  });
+
+  // ---------- Sheet navigator ----------
+  prevBtnEl.addEventListener('click', function () {
+    if (state.previewIndex > 0) { state.previewIndex--; renderPreview(state.previewIndex); renderPreviewNav(); }
+  });
+  nextBtnEl.addEventListener('click', function () {
+    if (state.previewIndex < state.sheets.length - 1) { state.previewIndex++; renderPreview(state.previewIndex); renderPreviewNav(); }
+  });
+
+  // ---------- Reset ----------
+  resetBtnEl.addEventListener('click', function () {
+    pageInputEl.value = '';
+    pagesPerSheetEl.value = '2';
+    printModeEl.value = 'both';
+    layoutModeEl.value = 'sequential';
+    bindEdgeEl.value = 'long';
+    pageOrientationEl.value = 'portrait';
+    reverseBackEl.checked = true;
+    pdfDoc = null;
+    state.pdfBytes = null;
+    thumbCache = Object.create(null);
+    thumbOrder = [];
+    applyLayoutModeConstraints();
+    saveSettings();
+    state.previewIndex = 0;
+    calculateAll();
+    pageInputEl.focus();
+  });
+
+  // ---------- Input listeners ----------
+  var debounceTimer = null;
+  pageInputEl.addEventListener('input', function () {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(calculateAll, 150);
+  });
+  [pagesPerSheetEl, printModeEl, layoutModeEl, bindEdgeEl].forEach(function (el) {
+    el.addEventListener('change', function () {
+      if (el === layoutModeEl) applyLayoutModeConstraints();
+      if (el === printModeEl) applyPrintModeVisibility();
+      saveSettings();
+      state.previewIndex = 0;
+      calculateAll();
+    });
+  });
+  reverseBackEl.addEventListener('change', function () { saveSettings(); calculateAll(); });
+  pageOrientationEl.addEventListener('change', function () {
+    saveSettings();
+    if (state.sheets.length) renderPreview(state.previewIndex);
+  });
+
+  // ---------- Offline indicator ----------
+  function updateOnlineStatus() {
+    if (navigator.onLine) {
+      if (!offlineBannerEl.classList.contains('hidden')) {
+        offlineBannerEl.classList.add('is-leaving');
+        setTimeout(function () {
+          offlineBannerEl.classList.add('hidden');
+          offlineBannerEl.classList.remove('is-leaving');
+        }, 280);
+      }
+    } else {
+      offlineBannerEl.classList.remove('is-leaving');
+      offlineBannerEl.classList.remove('hidden');
+    }
+  }
+  window.addEventListener('online', updateOnlineStatus);
+  window.addEventListener('offline', updateOnlineStatus);
+
+  // ---------- Init ----------
+  updateThemeIcon();
+  loadSettings();
+  applyLayoutModeConstraints();
+  calculateAll();
+  updateOnlineStatus();
+})();
+</script>
+
+<script>
+// Register the service worker once — enables install (PWA) and offline support.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('./sw.js').catch(function (err) {
+      console.warn('PrintStack: service worker registration failed', err);
+    });
+  });
+}
+</script>
+
+</body>
+</html>
